@@ -216,6 +216,7 @@ def build_pipeline(args):
 def run_predict_image(args) -> None:
     pipe = build_pipeline(args)
     image = Image.open(args.input).convert("RGB")
+    original_size = image.size  # (width, height)
     result = pipe(
         image=image,
         prompt=args.prompt,
@@ -225,9 +226,12 @@ def run_predict_image(args) -> None:
         guidance_scale=args.guidance_scale,
         max_sequence_length=args.max_sequence_length,
     )
+    output_image = result.images[0].convert("RGB")
+    if output_image.size != original_size:
+        output_image = output_image.resize(original_size, Image.Resampling.LANCZOS)
     output_path = Path(args.output).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    result.images[0].save(output_path)
+    output_image.save(output_path)
     print(f"Saved output image to {output_path}")
 
 
@@ -312,7 +316,7 @@ def run_predict_batch(args) -> None:
         )
 
         labeled_outputs: list[tuple[str, Image.Image]] = []
-        gif_frames: list[Image.Image] = [make_comparison_frame(work_image, work_image, "input")]
+        gif_frames: list[Image.Image] = [make_comparison_frame(original, original, "input")]
         output_records: list[dict] = []
 
         for alpha in alphas:
@@ -329,12 +333,14 @@ def run_predict_batch(args) -> None:
                 latents=shared_latents.clone(),
             )
             output_image = result.images[0].convert("RGB")
+            if output_image.size != original.size:
+                output_image = output_image.resize(original.size, Image.Resampling.LANCZOS)
             elapsed = time.perf_counter() - started
             label = f"alpha_{alpha:.2f}"
             output_path = outputs_dir / f"{label}.png"
             output_image.save(output_path)
             labeled_outputs.append((f"Alpha {alpha:.2f}", output_image))
-            gif_frames.append(make_comparison_frame(work_image, output_image, label))
+            gif_frames.append(make_comparison_frame(original, output_image, label))
             output_records.append(
                 {
                     "alpha": alpha,
@@ -348,7 +354,7 @@ def run_predict_batch(args) -> None:
 
         grid_path = item_dir / "grid.jpg"
         gif_path = item_dir / "comparison.gif"
-        make_grid(work_image, labeled_outputs).save(grid_path, quality=95)
+        make_grid(original, labeled_outputs).save(grid_path, quality=95)
         save_gif(gif_frames, gif_path, args.gif_duration_ms)
 
         metadata = {
