@@ -1,0 +1,26 @@
+name: scene-profiler-tests
+
+on:
+  pull_request:
+    paths:
+      - "tools/scene_profiler/**"
+      - ".github/workflows/scene-profiler-tests.yml"
+  push:
+    paths:
+      - "tools/scene_profiler/**"
+      - ".github/workflows/scene-profiler-tests.yml"
+
+jobs:
+  core-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install lightweight test dependencies
+        run: python -m pip install numpy Pillow PyYAML
+      - name: Compile
+        run: python -m compileall tools/scene_profiler
+      - name: Test
+        run: python -m unittest discover -s tools/scene_profiler/tests -v
