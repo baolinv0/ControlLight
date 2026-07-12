@@ -1,0 +1,186 @@
+version: 1
+
+models:
+  siglip2:
+    enabled: true
+    model_id: google/siglip2-base-patch16-384
+  segformer:
+    enabled: true
+    model_id: nvidia/segformer-b5-finetuned-ade-640-640
+    min_pixel_confidence: 0.45
+  open_vocab:
+    enabled: false
+    model_id: IDEA-Research/grounding-dino-tiny
+    box_threshold: 0.32
+    text_threshold: 0.25
+  sam2:
+    enabled: false
+    model_id: facebook/sam2.1-hiera-tiny
+
+runtime:
+  device: auto
+  dtype: auto
+  save_masks: false
+  save_overlays: 30
+  continue_on_error: true
+
+input:
+  reference_level: a_000
+  recursive: true
+  extensions: [.jpg, .jpeg, .png, .bmp, .tif, .tiff, .webp]
+
+semantic_axes:
+  environment:
+    exclusive: true
+    classes:
+      indoor:
+        - an indoor scene inside a room or building
+        - a photograph taken indoors
+        - an interior architectural space
+      outdoor:
+        - an outdoor scene under open sky
+        - a photograph taken outdoors
+        - an exterior natural or urban scene
+      transition:
+        - a semi-outdoor scene such as a balcony, terrace, covered walkway, or doorway
+        - a scene viewed from indoors toward outdoors through a large opening
+        - a transitional space between indoors and outdoors
+  time:
+    exclusive: true
+    classes:
+      day:
+        - a daytime scene illuminated by daylight
+        - a scene photographed during the day
+      twilight:
+        - a dawn, dusk, blue-hour, or twilight scene
+        - a scene photographed around sunrise or sunset
+      night:
+        - a nighttime scene after dark
+        - a night scene dominated by artificial lights
+  content:
+    exclusive: false
+    classes:
+      portrait:
+        - a portrait photograph where a person is a primary subject
+        - a photograph focused on one or more people
+      city:
+        - an urban city scene with buildings, roads, or vehicles
+        - a streetscape or metropolitan environment
+      nature:
+        - a natural landscape with vegetation, water, mountains, or open land
+        - a nature scene dominated by plants, terrain, sky, or water
+  illumination_semantic:
+    exclusive: true
+    classes:
+      warm:
+        - a scene dominated by warm amber, tungsten, candle, or sunset illumination
+      neutral:
+        - a scene with approximately neutral white illumination
+      cool:
+        - a scene dominated by cool blue illumination
+      mixed:
+        - a scene illuminated by multiple differently colored light sources
+
+segmentation_groups:
+  sky: [sky]
+  person: [person, apparel]
+  vegetation: [tree, grass, plant, field, flower, palm]
+  water: [water, sea, river, lake, swimming pool, waterfall, fountain]
+  road_ground: [road, sidewalk, earth, path, runway, dirt track, land, sand]
+  architecture: [wall, building, house, skyscraper, tower, hovel, column, door, railing, bannister, stairs, stairway, bridge, awning, canopy, grandstand, pier]
+  indoor_structure: [ceiling, floor, rug, curtain, blind]
+  window_glass: [windowpane, mirror, glass]
+  vehicle: [car, bus, truck, van, ship, boat, airplane, bicycle, minibike]
+  furniture: [bed, cabinet, table, chair, sofa, shelf, armchair, seat, desk, wardrobe, cushion, box, chest of drawers, counter, bookcase, coffee table, toilet, stool, bench, ottoman, kitchen island, countertop, buffet]
+  light_display: [lamp, light, chandelier, streetlight, television receiver, computer, screen, monitor, crt screen, sconce, traffic light, fireplace]
+
+open_vocab_labels:
+  light_source:
+    - lamp
+    - light bulb
+    - street light
+    - neon sign
+    - illuminated display
+    - fire
+    - sun
+  reflective_surface:
+    - mirror
+    - glass facade
+    - window reflection
+    - water reflection
+    - wet road
+    - polished metal
+    - shiny floor
+    - car windshield
+
+fusion:
+  environment_semantic_weight: 0.68
+  environment_region_weight: 0.32
+  content_semantic_weight: 0.65
+  content_region_weight: 0.35
+  illumination_semantic_weight: 0.35
+  illumination_photometric_weight: 0.65
+
+classification:
+  environment:
+    min_confidence: 0.48
+    min_margin: 0.10
+    transition_dual_evidence: 0.28
+  time:
+    min_confidence: 0.48
+    min_margin: 0.10
+    min_outdoor_evidence: 0.20
+    min_sky_ratio: 0.015
+  content:
+    threshold: 0.50
+    person_ratio_reference: 0.10
+    city_ratio_reference: 0.35
+    nature_ratio_reference: 0.40
+  elements:
+    sky_presence_ratio: 0.005
+    semantic_light_presence_ratio: 0.002
+  dynamic_range_proxy:
+    calibration_mode: fixed
+    low_to_medium_ev: 4.5
+    medium_to_high_ev: 7.0
+    threshold_review_margin_ev: 0.30
+    quantiles: [0.33, 0.67]
+  brightness:
+    calibration_mode: fixed
+    dark_to_medium_ev: -3.0
+    medium_to_bright_ev: -1.5
+    threshold_review_margin_ev: 0.20
+    quantiles: [0.33, 0.67]
+  exposure:
+    deep_shadow_threshold: 0.01
+    highlight_clip_threshold: 0.99
+    shadow_ratio_under: 0.25
+    clip_ratio_over: 0.05
+    dual_shadow_ratio: 0.15
+    dual_clip_ratio: 0.02
+    person_under_ev: -3.8
+    non_sky_under_ev: -3.2
+    non_sky_over_ev: -1.25
+  illumination:
+    grid_rows: 8
+    grid_cols: 8
+    min_patch_valid_ratio: 0.20
+    min_valid_patches: 6
+    max_neutral_saturation: 0.22
+    min_luminance: 0.03
+    max_luminance: 0.90
+    warm_cool_boundary_log2_br: 0.16
+    mixed_min_cluster_share: 0.18
+    mixed_min_separation_log2_br: 0.36
+  uncertainty:
+    min_segmentation_valid_ratio: 0.55
+    semantic_margin: 0.10
+    environment_conflict_ratio: 0.35
+    low_content_margin: 0.05
+
+output:
+  jsonl: scene_profiles.jsonl
+  csv: scene_profiles.csv
+  summary: dataset_summary.json
+  errors: errors.jsonl
+  raw_features: raw_features.jsonl
