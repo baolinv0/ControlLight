@@ -1,0 +1,1220 @@
+# Reference-Guided Aligned Pseudo-GT Selection 工程任务说明书
+
+## 1. 任务目标
+
+### 1.1 背景
+
+当前希望获得与参考图像具有相似影调风格、同时与输入图像严格像素对齐的训练伪 GT。
+
+生成式大模型能够产生较理想的亮度/影调效果，但存在：
+
+* 局部结构重绘；
+* 边缘位置变化；
+* 纹理变化；
+* 几何位置轻微偏移；
+* 不同 seed / preprocessing 下结果不稳定。
+
+因此，大模型输出不能直接作为 pixel-wise supervised GT。
+
+当前已有替代方案：
+
+```text
+Input
+  ↓
+生成最大亮度 Endpoint
+  ↓
+Retinex 插值
+  ↓
+生成多个严格对齐的 brightness levels
+```
+
+需要新增一个 **Reference-guided Level Selector**：
+
+> 将生成式参考图像仅作为“影调风格参考”，从与 Input 严格对齐的 brightness ladder 中选择人物影调最接近 Reference 的 level，作为最终 Aligned Pseudo-GT。
+
+---
+
+# 2. 最终数据流
+
+```text
+                       Generated Reference
+                     非严格像素对齐，仅作风格参考
+                               │
+                               ▼
+                     Reference Region Analysis
+                    Person / Face / Local BG
+                               │
+                               ▼
+                       Tone Descriptor
+                               │
+                               │
+Input ──→ Maximum Enhancement ──┐
+                               │
+                         Retinex Interpolation
+                               │
+                ┌──────────────┼───────────────┐
+                ▼              ▼               ▼
+             a_m100          a_000           a_p100
+                │              │               │
+                └──────────────┼───────────────┘
+                               ▼
+                     Candidate Tone Analysis
+                               │
+                               ▼
+                    Reference-Candidate Score
+                               │
+                               ▼
+                         Best Level
+                               │
+                               ▼
+                    Aligned Pseudo-GT
+```
+
+---
+
+# 3. 输入定义
+
+每个样本包含：
+
+```text
+sample/
+├── source.png
+├── reference.png
+└── ladder/
+    ├── a_m100.png
+    ├── a_m075.png
+    ├── a_m050.png
+    ├── a_m025.png
+    ├── a_000.png
+    ├── a_p025.png
+    ├── a_p050.png
+    ├── a_p075.png
+    └── a_p100.png
+```
+
+系数定义：
+
+| Level  | Coefficient |
+| ------ | ----------: |
+| a_m100 |       -1.00 |
+| a_m075 |       -0.75 |
+| a_m050 |       -0.50 |
+| a_m025 |       -0.25 |
+| a_000  |        0.00 |
+| a_p025 |       +0.25 |
+| a_p050 |       +0.50 |
+| a_p075 |       +0.75 |
+| a_p100 |       +1.00 |
+
+### MUST
+
+1. 所有 ladder 图必须与 `source.png`：
+
+   * 相同分辨率；
+   * 相同 crop；
+   * 像素严格对齐。
+
+2. `reference.png`：
+
+   * 不要求与 source 像素对齐；
+   * 不允许计算 Source/Reference pixel-wise L1/L2/PSNR 作为选档依据。
+
+---
+
+# 4. 输出定义
+
+```text
+output/
+├── pseudo_gt/
+│   └── {sample_id}.png
+│
+├── scores/
+│   └── {sample_id}.json
+│
+├── visualization/
+│   └── {sample_id}.jpg
+│
+├── masks/
+│   └── {sample_id}/
+│       ├── source_person.png
+│       ├── source_face.png
+│       ├── source_local_bg.png
+│       ├── ref_person.png
+│       ├── ref_face.png
+│       └── ref_local_bg.png
+│
+└── summary/
+    ├── selection_summary.csv
+    └── dataset_summary.json
+```
+
+最终：
+
+```text
+pseudo_gt/{sample_id}.png
+```
+
+必须是选中的原始 ladder 图像直接复制，不允许再次 resize、warp、生成或颜色修改。
+
+---
+
+# 5. 核心原则
+
+本模块不能回答：
+
+> 哪张图全局平均亮度最接近 Reference？
+
+而需要回答：
+
+> 哪个 aligned level 中，人物处于与 Reference 最相似的影调位置，同时人物与周围背景具有相似的明暗层次关系？
+
+因此 score 必须是：
+
+```text
+Person-centric Tone Matching
+```
+
+而非：
+
+```text
+Global Brightness Matching
+```
+
+---
+
+# 6. Region Analysis
+
+## 6.1 Source / Ladder
+
+只在 `source` 或 `a_000` 上计算一次：
+
+```text
+Person Mask
+Face Mask
+Local Background Mask
+```
+
+然后固定复用于全部 ladder level。
+
+### MUST
+
+禁止：
+
+```text
+分别对每个 brightness level 重新分割
+```
+
+否则亮度变化导致的 segmentation instability 会污染 score。
+
+---
+
+# 7. 主人物选择
+
+若检测到多个 Person：
+
+优先选择 Primary Person。
+
+推荐规则：
+
+```text
+score_person =
+0.50 × normalized_area
++ 0.30 × center_score
++ 0.20 × face_confidence
+```
+
+若已有产品/工程主人物逻辑，可直接复用。
+
+### 第一版要求
+
+只评价 Primary Person。
+
+暂不对多个路人进行平均。
+
+---
+
+# 8. Local Background 定义
+
+背景不能直接定义为：
+
+```text
+~person_mask
+```
+
+因为远处天空、建筑等会污染人物—背景关系。
+
+以 Person Mask 为基础生成 Local Background Ring：
+
+[
+M_{BG}
+======
+
+## Dilate(M_P,r_{outer})
+
+Dilate(M_P,r_{inner})
+]
+
+推荐：
+
+```text
+r_inner = 0.02 × max(person_bbox_width, height)
+r_outer = 0.10 × max(person_bbox_width, height)
+```
+
+并裁剪到图像合法区域。
+
+如果有效背景面积过小：
+
+```text
+local_bg_valid = false
+```
+
+对应背景相关 score 自动重新归一化权重。
+
+---
+
+# 9. Photometric Space
+
+所有 tone 计算统一：
+
+### Step 1
+
+sRGB → Linear RGB。
+
+### Step 2
+
+计算 luminance：
+
+[
+Y=0.2126R+0.7152G+0.0722B
+]
+
+### Step 3
+
+进入 log-domain：
+
+[
+L=\log_2(Y+\epsilon)
+]
+
+推荐：
+
+```text
+epsilon = 1e-6
+```
+
+禁止直接在 8-bit sRGB RGB mean 上计算主 score。
+
+---
+
+# 10. Tone Descriptor
+
+每个 Region：
+
+```text
+Person
+Face
+Local Background
+```
+
+计算：
+
+[
+T=[P10,P25,P50,P75,P90]
+]
+
+其中：
+
+```text
+P10：shadow
+P25：lower midtone
+P50：median tone
+P75：upper midtone
+P90：highlight
+```
+
+---
+
+# 11. Person Descriptor
+
+定义：
+
+[
+T_P=[P10_P,P25_P,P50_P,P75_P,P90_P]
+]
+
+人物误差：
+
+[
+E_P=
+\frac{1}{5}
+\sum_q
+|P_q^{candidate}-P_q^{reference}|
+]
+
+这是主评分项。
+
+---
+
+# 12. Face Descriptor
+
+如果存在可靠 Face：
+
+[
+T_F=[P10_F,P25_F,P50_F,P75_F,P90_F]
+]
+
+[
+E_F=
+\frac{1}{5}
+\sum_q
+|P_q^{candidate}-P_q^{reference}|
+]
+
+Face Mask 无效时：
+
+```text
+E_F = unavailable
+```
+
+剩余 score 权重重新归一化。
+
+---
+
+# 13. Background Descriptor
+
+定义：
+
+[
+T_B=[P10_B,P25_B,P50_B,P75_B,P90_B]
+]
+
+[
+E_B=
+\frac{1}{5}
+\sum_q
+|P_q^{candidate}-P_q^{reference}|
+]
+
+背景只做弱约束，不允许主导 level selection。
+
+---
+
+# 14. Person-Background Tone Relation
+
+这是第二重要评分维度。
+
+定义：
+
+### 人物/背景亮度关系
+
+[
+R_1=P50_P-P50_B
+]
+
+### 人物内部动态范围
+
+[
+R_2=P90_P-P10_P
+]
+
+### 背景内部动态范围
+
+[
+R_3=P90_B-P10_B
+]
+
+关系误差：
+
+[
+E_{PB}
+======
+
+|R_1^C-R_1^R|
++
+0.25|R_2^C-R_2^R|
++
+0.25|R_3^C-R_3^R|
+]
+
+其中：
+
+```text
+C = Candidate
+R = Reference
+```
+
+---
+
+# 15. Candidate 总评分
+
+## 15.1 Face 有效
+
+默认：
+
+[
+\boxed{
+E=
+0.40E_P
++
+0.30E_{PB}
++
+0.20E_F
++
+0.10E_B
+}
+]
+
+---
+
+## 15.2 Face 无效
+
+使用：
+
+[
+\boxed{
+E=
+0.50E_P
++
+0.35E_{PB}
++
+0.15E_B
+}
+]
+
+---
+
+## 15.3 Local Background 无效
+
+仅使用：
+
+```text
+Person
++
+Face
+```
+
+重新归一化已有权重。
+
+---
+
+# 16. Best Level Selection
+
+对所有候选：
+
+[
+E_k=Score(I_k,Reference)
+]
+
+选择：
+
+[
+k^*=\arg\min_k E_k
+]
+
+最终：
+
+```text
+pseudo_gt = ladder[k*]
+```
+
+---
+
+# 17. Top-2 Margin
+
+除 Best Candidate 外，必须记录 Second Best。
+
+定义：
+
+[
+Margin=E_{second}-E_{best}
+]
+
+输出：
+
+```text
+best_level
+best_score
+second_best_level
+second_best_score
+margin
+```
+
+Margin 不直接改变 pseudo-GT，但用于后续：
+
+* 筛低置信度样本；
+* 人工 Review；
+* 分析 brightness levels 是否过密。
+
+---
+
+# 18. Color 处理
+
+Color 不进入主 Tone Score。
+
+原因：
+
+生成式 Reference 自身可能存在：
+
+```text
+天空更蓝
+肤色变化
+WB变化
+局部饱和度变化
+```
+
+若直接学习这些颜色变化，可能将生成模型 artifact 传播进 pseudo-GT。
+
+### 第一版
+
+只计算 chromaticity drift 作为 debug 信息。
+
+例如：
+
+[
+r=\frac R{R+G+B}
+]
+
+[
+g=\frac G{R+G+B}
+]
+
+记录：
+
+```text
+person_color_diff
+face_color_diff
+background_color_diff
+```
+
+但：
+
+```text
+weight = 0
+```
+
+不参与 level selection。
+
+---
+
+# 19. JSON 输出格式
+
+示例：
+
+```json
+{
+  "sample_id": "000123",
+
+  "best_level": "a_p050",
+  "best_coefficient": 0.5,
+  "best_score": 0.083,
+
+  "second_best_level": "a_p025",
+  "second_best_score": 0.112,
+
+  "margin": 0.029,
+
+  "region_validity": {
+    "person": true,
+    "face": true,
+    "local_background": true
+  },
+
+  "best_components": {
+    "person_error": 0.060,
+    "person_background_error": 0.110,
+    "face_error": 0.050,
+    "background_error": 0.120
+  },
+
+  "levels": {
+    "a_m100": {
+      "score": 1.125,
+      "person_error": 0.88,
+      "person_background_error": 1.54,
+      "face_error": 0.93,
+      "background_error": 0.71
+    },
+
+    "a_p050": {
+      "score": 0.083,
+      "person_error": 0.060,
+      "person_background_error": 0.110,
+      "face_error": 0.050,
+      "background_error": 0.120
+    }
+  }
+}
+```
+
+---
+
+# 20. Visualization 要求
+
+每个 sample 必须生成一张结果图。
+
+推荐布局：
+
+```text
+┌─────────┬────────────┬──────────────────┐
+│ Source  │ Reference  │ Selected PseudoGT│
+└─────────┴────────────┴──────────────────┘
+
+┌────────┬────────┬────────┬────────┬────────┐
+│ m100   │ m075   │ m050   │ m025   │ 000    │
+├────────┼────────┼────────┼────────┼────────┤
+│ p025   │ p050   │ p075   │ p100   │        │
+└────────┴────────┴────────┴────────┴────────┘
+```
+
+每个 Candidate title：
+
+```text
+a_p050 ★ BEST
+Total=0.083
+
+P=0.060
+PB=0.110
+F=0.050
+B=0.120
+```
+
+建议显示：
+
+```text
+Similarity Rank: #1
+```
+
+不要只显示人工构造的“95% similarity”。
+
+Score 原始值必须保留。
+
+---
+
+# 21. Debug Visualization
+
+第一阶段至少随机保存 100 个样本的 Mask overlay：
+
+### Source
+
+```text
+Person = red contour
+Face = green contour
+Local BG = blue translucent mask
+```
+
+### Reference
+
+同样输出。
+
+目的：
+
+确认：
+
+* 主人物选择正确；
+* 背景 ring 合理；
+* face mask 没漂；
+* reference segmentation 没选错人。
+
+---
+
+# 22. Dataset Summary
+
+批量完成后输出：
+
+```text
+selection_summary.csv
+```
+
+字段至少包括：
+
+```text
+sample_id
+best_level
+best_coefficient
+best_score
+second_best_level
+second_best_score
+margin
+person_error
+person_background_error
+face_error
+background_error
+person_valid
+face_valid
+background_valid
+```
+
+---
+
+# 23. Dataset-level Statistics
+
+输出：
+
+```text
+dataset_summary.json
+```
+
+至少包含：
+
+### Level Histogram
+
+```text
+a_m100 : N
+a_m075 : N
+...
+a_p100 : N
+```
+
+### Score
+
+```text
+best_score median
+best_score P90
+best_score P95
+```
+
+### Margin
+
+```text
+margin median
+margin P10
+```
+
+### Region availability
+
+```text
+person valid rate
+face valid rate
+local-background valid rate
+```
+
+---
+
+# 24. 必须实现的异常处理
+
+## Case A：检测不到人物
+
+```text
+status = NO_PERSON
+```
+
+第一版：
+
+不生成正式 pseudo-GT，进入 review list。
+
+不得自动退化成 global brightness selection。
+
+---
+
+## Case B：Reference 检测不到人物
+
+```text
+status = INVALID_REFERENCE_PERSON
+```
+
+进入 review。
+
+---
+
+## Case C：Face 缺失
+
+允许。
+
+自动使用 no-face score。
+
+---
+
+## Case D：Background Ring 无效
+
+允许。
+
+重新归一化 Person / Face 权重。
+
+---
+
+## Case E：多个主人物无法稳定确定
+
+输出：
+
+```text
+status = AMBIGUOUS_PERSON
+```
+
+进入 review。
+
+---
+
+## Case F：Ladder 缺少 level
+
+不得静默跳过。
+
+JSON 中明确记录：
+
+```text
+missing_levels
+```
+
+若候选不足要求，sample 标记 INVALID。
+
+---
+
+# 25. 代码模块建议
+
+```text
+pseudo_gt_selector/
+├── config.py
+├── dataset.py
+├── mask_provider.py
+├── region_builder.py
+├── photometric.py
+├── tone_descriptor.py
+├── scorer.py
+├── selector.py
+├── visualization.py
+├── statistics.py
+└── run.py
+```
+
+---
+
+# 26. 接口要求
+
+## `MaskProvider`
+
+```python
+class MaskProvider:
+
+    def get_person_masks(self, image):
+        ...
+
+    def get_primary_person_mask(self, image):
+        ...
+
+    def get_face_mask(self, image, person_mask):
+        ...
+```
+
+---
+
+## `ToneDescriptorExtractor`
+
+```python
+class ToneDescriptorExtractor:
+
+    def extract(
+        self,
+        image,
+        person_mask,
+        face_mask=None,
+        background_mask=None,
+    ):
+        ...
+```
+
+返回：
+
+```python
+{
+    "person": ...,
+    "face": ...,
+    "background": ...,
+    "person_bg_relation": ...
+}
+```
+
+---
+
+## `ToneScorer`
+
+```python
+class ToneScorer:
+
+    def compare(
+        self,
+        candidate_desc,
+        reference_desc
+    ):
+        ...
+```
+
+---
+
+## `PseudoGTSelector`
+
+```python
+class PseudoGTSelector:
+
+    def select(
+        self,
+        source,
+        reference,
+        ladder
+    ):
+        ...
+```
+
+返回：
+
+```python
+SelectionResult
+```
+
+---
+
+# 27. 第一阶段验收标准
+
+## MUST-01：对齐保证
+
+选中的 pseudo-GT：
+
+* 必须直接来源于 ladder；
+* 分辨率与 Source 完全相同；
+* 不允许 warp；
+* 不允许重新生成；
+* 不允许再次 resize。
+
+**Pass：100%。**
+
+---
+
+## MUST-02：选择结果可复现
+
+同一：
+
+```text
+Input
+Reference
+Ladder
+Config
+```
+
+重复运行：
+
+```text
+best_level
+score
+```
+
+完全一致。
+
+**Pass：100%。**
+
+---
+
+## MUST-03：评分完整
+
+所有有效候选必须输出：
+
+```text
+Total Score
+Person Score
+Person-BG Score
+Face Score（若有效）
+Background Score
+```
+
+不得只有最终 level。
+
+---
+
+## MUST-04：Reference 禁止 pixel-wise comparison
+
+代码 review 中不得存在：
+
+```text
+candidate-reference L1
+candidate-reference L2
+candidate-reference PSNR
+candidate-reference SSIM
+```
+
+作为 level selection score。
+
+---
+
+## MUST-05：Person 是主导因素
+
+以下测试：
+
+```text
+Candidate A:
+全局亮度更接近 Reference，
+但人物明显过暗
+
+Candidate B:
+全局亮度略有偏差，
+但人物及人物/背景关系明显更接近
+```
+
+算法必须优先 Candidate B。
+
+建立至少 5 个 synthetic/unit test。
+
+---
+
+## MUST-06：人物—背景关系有效
+
+构造：
+
+```text
+Candidate A：
+Person brightness 正确
+Background brightness 错误
+
+Candidate B：
+Person brightness 接近
+Person-BG contrast 与 Reference 正确
+```
+
+应能够通过 (E_{PB}) 区分。
+
+---
+
+## MUST-07：Face fallback 正常
+
+Face Mask 缺失时：
+
+* 不报错；
+* 使用无 Face 权重；
+* Score 权重和为 1。
+
+---
+
+## MUST-08：可视化
+
+每个有效样本必须输出：
+
+```text
+Source
+Reference
+所有 Ladder Candidates
+Best Candidate
+每个 Candidate score
+```
+
+---
+
+# 28. 推荐人工验收实验
+
+随机选择：
+
+```text
+100 个样本
+```
+
+由人工判断：
+
+> 如果从 9 个 brightness level 中人工选择“人物影调最接近 Reference”的一档，算法 Top-1 是否一致？
+
+统计：
+
+[
+Top1\ Agreement
+]
+
+以及允许相邻一档：
+
+[
+Top1\pm1\ Agreement
+]
+
+建议第一阶段目标：
+
+```text
+Top-1 ≥ 80%
+Top-1 ± 1 level ≥ 95%
+```
+
+这两个阈值用于工程 POC，后续可根据人工标注重新冻结。
+
+---
+
+# 29. 第二个关键人工检查
+
+重点检查以下 failure categories：
+
+```text
+人脸过亮
+人脸过暗
+背景过亮抢主体
+背景压得过暗
+人物和背景反差不对
+天空影响全局判断
+黑衣服影响 person statistic
+多人主体选错
+Reference 人物结构改变
+```
+
+每类至少保留典型 debug case。
+
+---
+
+# 30. 第一版明确不做
+
+以下内容暂不进入 V1：
+
+* 用 VLM 自动决定最终 level；
+* 学习型 selector；
+* Reference/Candidate feature pixel matching；
+* Optical Flow；
+* Geometry registration；
+* 多人物复杂对应；
+* Color style 强匹配；
+* 生成式修复 Selected Pseudo-GT；
+* 连续 coefficient 回归。
+
+V1 只解决：
+
+[
+\boxed{
+Generated\ Tone\ Reference
+\rightarrow
+Aligned\ Brightness\ Level
+}
+]
+
+---
+
+# 31. 最终验收输出
+
+工程交付时必须提供：
+
+1. 完整代码；
+2. Config；
+3. Unit Tests；
+4. 100 样本人工对照结果；
+5. `selection_summary.csv`；
+6. `dataset_summary.json`；
+7. 随机 50–100 个 visualization；
+8. Top-1 / Top-1±1 accuracy；
+9. Failure case 分类；
+10. README 运行命令。
+
+---
+
+# 32. 核心实现约束总结
+
+本方案最重要的四条约束：
+
+```text
+1. Reference 只提供 Tone Style，不提供 Pixel Target。
+
+2. 最终 Pseudo-GT 必须直接从严格对齐的 Ladder 中选择。
+
+3. Selection 必须以 Person Tone + Person/Background Relation 为核心，
+   不能退化成 Global Brightness Matching。
+
+4. 所有中间分数和候选必须保留并可视化，
+   不能只输出最终一张 Pseudo-GT。
+```
+
+最终希望得到的不是：
+
+> **“和 Reference 平均亮度最接近的图。”**
+
+而是：
+
+> **“保持 Source 像素内容不变，但人物及人物—背景影调关系最接近 Reference 风格的 aligned image。”**
+
+这就是本模块的最终产品定义。
