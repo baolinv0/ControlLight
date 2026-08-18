@@ -1,0 +1,10 @@
+{
+  "primary_metrics": {
+    "top1_accuracy": 0.80,
+    "top1_pm1_accuracy": 0.95
+  },
+  "stop_policy": {
+    "max_iterations": 30,
+    "plateau_iterations": 5
+  }
+}

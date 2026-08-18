@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .venv/
+agent_runs/
+agent/labels.csv
+.qwen/QWEN.local.md
