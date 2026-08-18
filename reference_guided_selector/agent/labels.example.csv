@@ -1,0 +1,4 @@
+sample_id,target_level,failure_category
+scene001,a_p025,
+scene002,a_000,face_overbright
+scene003,a_m050,dark_clothes_bias
