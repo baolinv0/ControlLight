@@ -49,11 +49,10 @@ Repeat the following until the stop rule is satisfied:
 2. Identify the highest-value failure pattern.
 3. State one primary, falsifiable hypothesis for the next change.
 4. Change the smallest relevant set of algorithm code and/or configuration.
-5. Run `bash scripts/run_agent_tests.sh`.
-6. If tests pass, run `bash scripts/run_iteration.sh`.
-7. Compare new metrics with the best accepted metrics.
-8. Keep the change only when the evidence supports it. If it regresses the primary metrics without a justified tradeoff, revert only the changes made in that iteration.
-9. Continue if `goal_reached` is false.
+5. Run `bash scripts/run_iteration.sh` once for the candidate iteration. It already runs `bash scripts/run_agent_tests.sh`, the real selector experiment, and the frozen-label evaluation.
+6. Compare new metrics with the best accepted metrics.
+7. Accept an iteration only when the frozen real-data evaluation supports it against the best accepted metrics. If it is rejected, revert only that iteration's own change; never use destructive repository-wide rollback.
+8. Continue if `goal_reached` is false.
 
 Prefer one major hypothesis per iteration. Do not make broad unrelated refactors while searching for metric improvement.
 
@@ -67,6 +66,10 @@ Primary objective:
 Use failure distributions, component scores, margins, masks, and visualizations to explain why an experiment helped or failed.
 
 A change that only improves unit tests but does not improve the real-data objective is not an algorithmic improvement.
+
+Accepted and rejected iterations are determined by the frozen real-data
+evaluation artifacts, not by unit-test results alone. The existing
+`scripts/run_iteration.sh` command is the experiment gate.
 
 ## Allowed changes
 

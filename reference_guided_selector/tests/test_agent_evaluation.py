@@ -1,7 +1,10 @@
 import csv
+import importlib
 import json
 from pathlib import Path
 
+import agent.evaluate as evaluator
+import pseudo_gt_selector.config as selector_config
 from agent.evaluate import evaluate_selection_summary, main
 
 
@@ -81,6 +84,56 @@ def test_evaluator_reaches_goal_only_when_all_configured_thresholds_pass(tmp_pat
     assert metrics["top1_pm1_accuracy"] == 1.0
     assert metrics["goal_reached"] is True
     assert failures == []
+
+
+def test_evaluator_keeps_canonical_neighbor_order_when_selector_order_changes(tmp_path, monkeypatch):
+    labels = tmp_path / "labels.csv"
+    summary = tmp_path / "selection_summary.csv"
+    mutable_order = {
+        "a_p025": 0.25,
+        "a_m100": -1.0,
+        "a_m075": -0.75,
+        "a_m050": -0.5,
+        "a_m025": -0.25,
+        "a_000": 0.0,
+        "a_p075": 0.75,
+        "a_p100": 1.0,
+        "a_p050": 0.5,
+    }
+    monkeypatch.setattr(selector_config, "LEVEL_COEFFICIENTS", mutable_order)
+    importlib.reload(evaluator)
+
+    _write_csv(
+        labels,
+        ["sample_id", "target_level"],
+        [{"sample_id": "scene001", "target_level": "a_p025"}],
+    )
+    _write_csv(
+        summary,
+        ["sample_id", "status", "best_level"],
+        [{"sample_id": "scene001", "status": "ACCEPT", "best_level": "a_p050"}],
+    )
+
+    metrics, failures = evaluator.evaluate_selection_summary(
+        summary,
+        labels,
+        {"top1_accuracy": 1.0, "top1_pm1_accuracy": 1.0},
+    )
+
+    assert evaluator.LEVELS == (
+        "a_m100",
+        "a_m075",
+        "a_m050",
+        "a_m025",
+        "a_000",
+        "a_p025",
+        "a_p050",
+        "a_p075",
+        "a_p100",
+    )
+    assert metrics["top1_pm1_accuracy"] == 1.0
+    assert failures[0]["delta_levels"] == 1
+    assert failures[0]["direction"] == "too_bright"
 
 
 def test_evaluator_cli_writes_machine_readable_metrics_and_failures(tmp_path):

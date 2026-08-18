@@ -61,7 +61,7 @@ Code completion does not claim the data-dependent acceptance items. Final delive
 
 ## Autonomous Qwen Code experiment loop
 
-This directory is ready to be used as the working directory of a locally deployed Qwen Code agent. The model/runtime configuration is external to this repository. Project behavior is defined by `QWEN.md`, while the frozen acceptance target is defined by `GOAL.md` and `agent/goal.json`.
+This directory is ready to be used as the working directory of a locally deployed Qwen Code agent. This project supplies the Qwen Code client configuration; the vLLM server itself remains external. Project behavior is defined by `QWEN.md`, while the frozen acceptance target is defined by `GOAL.md` and `agent/goal.json`.
 
 Prepare a real-data label CSV using `agent/labels.example.csv` as the schema, then export the real dataset and label paths:
 
@@ -101,3 +101,20 @@ agent_runs/current/evaluation/failures.json
 `metrics.json` contains Top-1, Top-1±1, coverage, threshold pass/fail fields, and `goal_reached`. Missing predictions count as incorrect. `failures.json` provides sample IDs, target/selected levels, signed ladder-direction errors, status, and optional human failure-category metadata for the next Qwen Code reasoning iteration.
 
 To run autonomously, start Qwen Code from this directory and instruct it to follow `QWEN.md` and achieve `GOAL.md`. The agent is explicitly forbidden from changing the frozen evaluator, goal, or human labels to obtain a passing score.
+
+### Qwen Code headless loop
+
+Start a local vLLM server that serves the model id `qwen3.8-27b` at the
+configured OpenAI-compatible endpoint `http://127.0.0.1:8000/v1`, then provide
+its placeholder-backed credential in the shell:
+
+```bash
+export VLLM_API_KEY=local-vllm
+qwen --model qwen3.8-27b --approval-mode yolo --max-session-turns 100 --max-tool-calls 500 --max-wall-time 6h -p "Follow QWEN.md and run the real-data experiment loop until its stop condition."
+```
+
+Continue the most recent headless session with the same execution budget:
+
+```bash
+qwen --continue --model qwen3.8-27b --approval-mode yolo --max-session-turns 100 --max-tool-calls 500 --max-wall-time 6h -p "Resume QWEN.md's real-data experiment loop."
+```

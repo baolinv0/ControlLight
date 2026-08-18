@@ -3,10 +3,17 @@ import csv
 import json
 from pathlib import Path
 
-from pseudo_gt_selector.config import LEVEL_COEFFICIENTS
-
-
-LEVELS = tuple(LEVEL_COEFFICIENTS)
+LEVELS = (
+    "a_m100",
+    "a_m075",
+    "a_m050",
+    "a_m025",
+    "a_000",
+    "a_p025",
+    "a_p050",
+    "a_p075",
+    "a_p100",
+)
 LEVEL_INDEX = {level: index for index, level in enumerate(LEVELS)}
 
 

@@ -1,0 +1,32 @@
+{
+  "$version": 4,
+  "model": {
+    "name": "qwen3.8-27b"
+  },
+  "modelProviders": {
+    "openai": [
+      {
+        "id": "qwen3.8-27b",
+        "name": "Local vLLM Qwen 3.8 27B",
+        "baseUrl": "http://127.0.0.1:8000/v1",
+        "envKey": "VLLM_API_KEY",
+        "generationConfig": {
+          "timeout": 300000,
+          "contextWindowSize": 65536,
+          "samplingParams": {
+            "temperature": 0.2,
+            "max_tokens": 8192
+          }
+        }
+      }
+    ]
+  },
+  "security": {
+    "auth": {
+      "selectedType": "openai"
+    }
+  },
+  "tools": {
+    "approvalMode": "yolo"
+  }
+}

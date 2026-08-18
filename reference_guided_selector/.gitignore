@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 agent_runs/
 agent/labels.csv
+.qwen/QWEN.local.md
