@@ -50,8 +50,7 @@ Samples with no source person, no reference person, ambiguous primary people, mi
 ## Tests
 
 ```bash
-pytest -q
-python -m compileall pseudo_gt_selector tests
+bash scripts/run_agent_tests.sh
 ```
 
 Synthetic tests cover five cases where global brightness favors the wrong candidate but person-centered tone matching selects the correct ladder level. Final accuracy targets still require the real-data human study described in the specification.
@@ -59,3 +58,46 @@ Synthetic tests cover five cases where global brightness favors the wrong candid
 ## External real-data acceptance gate
 
 Code completion does not claim the data-dependent acceptance items. Final delivery still requires: 100 human-selected real samples; reported Top-1 and Top-1±1 agreement; 50–100 archived real visualizations; and representative cases for each specified failure category. These results must be measured from supplied real images and labels, not synthesized by the test suite.
+
+## Autonomous Qwen Code experiment loop
+
+This directory is ready to be used as the working directory of a locally deployed Qwen Code agent. The model/runtime configuration is external to this repository. Project behavior is defined by `QWEN.md`, while the frozen acceptance target is defined by `GOAL.md` and `agent/goal.json`.
+
+Prepare a real-data label CSV using `agent/labels.example.csv` as the schema, then export the real dataset and label paths:
+
+```bash
+export PSEUDO_GT_INPUT_ROOT=/data/pseudo_gt_samples
+export PSEUDO_GT_LABELS=/data/pseudo_gt_human_labels.csv
+```
+
+Optional settings:
+
+```bash
+export PSEUDO_GT_OUTPUT_ROOT=$PWD/agent_runs/current
+export PSEUDO_GT_MASK_DIR_NAME=provided_masks
+export PSEUDO_GT_DEBUG_OVERLAY_LIMIT=100
+export PSEUDO_GT_DEBUG_OVERLAY_SEED=0
+```
+
+Run one complete deterministic iteration:
+
+```bash
+bash scripts/run_iteration.sh
+```
+
+The command executes:
+
+```text
+unit tests + compile gate
+        ↓
+real selector experiment
+        ↓
+frozen-label evaluator
+        ↓
+agent_runs/current/evaluation/metrics.json
+agent_runs/current/evaluation/failures.json
+```
+
+`metrics.json` contains Top-1, Top-1±1, coverage, threshold pass/fail fields, and `goal_reached`. Missing predictions count as incorrect. `failures.json` provides sample IDs, target/selected levels, signed ladder-direction errors, status, and optional human failure-category metadata for the next Qwen Code reasoning iteration.
+
+To run autonomously, start Qwen Code from this directory and instruct it to follow `QWEN.md` and achieve `GOAL.md`. The agent is explicitly forbidden from changing the frozen evaluator, goal, or human labels to obtain a passing score.
